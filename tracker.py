@@ -14,14 +14,18 @@ QUID = "0x1a44233fae8d50f1aeb3a5d58dd426ff4814cb53"
 USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
 
 # PancakeSwap V3 Factory on Base
-FACTORY = "0x0bfbcf9fa4f9c56b0f40a671ad40e0805a091865"
+PANCAKE_FACTORY = "0x0bfbcf9fa4f9c56b0f40a671ad40e0805a091865"
 
-# PancakeSwap V3 PoolCreated
-POOL_CREATED_TOPIC = (
-    "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118"
+# Verified QUID / USDC PancakeSwap V3 pool
+QUID_USDC_POOL = "0x07c4bc0f5fb6cb069124df3e1ae0b8fd8148ccc4"
+
+# ERC-20 Transfer event
+TRANSFER_TOPIC = (
+    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4"
+    "a11628f55a4df523b3ef"
 )
 
-# PancakeSwap V3 Swap
+# PancakeSwap V3 Swap event
 SWAP_TOPIC = (
     "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8"
     "26497a3577dc83"
@@ -30,19 +34,21 @@ SWAP_TOPIC = (
 QUID_DECIMALS = 18
 USDC_DECIMALS = 6
 
-# Known QUID/USDC pool from your verified transaction
-KNOWN_USDC_POOL = "0x07c4bc0f5fb6cb069124df3e1ae0b8fd8148ccc4"
+# Pool factory() selector
+FACTORY_SELECTOR = "0xc45a0155"
+
+# Pool slot0() selector
+SLOT0_SELECTOR = "0x3850c7bd"
 
 wallet_volume = {}
 seen_transactions = set()
-
-qid_pools = set()
-pool_tokens = {}
+known_pancake_pools = set()
 
 quid_usdc_price = 0.0
+last_price_update = 0
 
 
-def rpc(ws, method, params, request_id=100):
+def rpc(ws, method, params, request_id):
     message = {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -71,96 +77,12 @@ def signed_int256(value):
     return number
 
 
-def pad_address(address):
-    return "0x" + address[2:].lower().zfill(64)
-
-
-def decode_pool_created(log):
-    topics = log.get("topics", [])
-
-    if len(topics) < 4:
-        return None
-
-    token0 = "0x" + topics[1][-40:].lower()
-    token1 = "0x" + topics[2][-40:].lower()
-
-    data = log.get("data", "")
-
-    if len(data) < 64:
-        return None
-
-    pool = "0x" + data[-40:].lower()
-
-    if token0 == QUID or token1 == QUID:
-        return pool, token0, token1
-
-    return None
-
-
-def discover_pools(ws):
-    print("Discovering PancakeSwap QUID pools...")
-
-    latest_hex = rpc(ws, "eth_blockNumber", [], 101)
-    latest = int(latest_hex, 16)
-
-    # Search in manageable chunks.
-    # The filter is only for PancakeSwap PoolCreated events
-    # involving the QUID token.
-    chunk = 200000
-
-    quid_topic = pad_address(QUID)
-
-    for start in range(0, latest + 1, chunk):
-        end = min(start + chunk - 1, latest)
-
-        try:
-            logs = rpc(
-                ws,
-                "eth_getLogs",
-                [{
-                    "fromBlock": hex(start),
-                    "toBlock": hex(end),
-                    "address": FACTORY,
-                    "topics": [
-                        POOL_CREATED_TOPIC,
-                        [quid_topic],
-                    ]
-                }],
-                102
-            )
-
-            for log in logs:
-                decoded = decode_pool_created(log)
-
-                if decoded:
-                    pool, token0, token1 = decoded
-
-                    qid_pools.add(pool)
-                    pool_tokens[pool] = (token0, token1)
-
-        except Exception as e:
-            print("Pool discovery error:", e)
-
-    # Also make absolutely sure the verified USDC pool is included.
-    qid_pools.add(KNOWN_USDC_POOL)
-
-    print("QUID pools found:", len(qid_pools))
-
-    for pool in sorted(qid_pools):
-        tokens = pool_tokens.get(pool)
-
-        if tokens:
-            print("POOL:", pool, "TOKENS:", tokens)
-        else:
-            print("POOL:", pool)
-
-
-def get_transaction_sender(ws, tx_hash):
+def get_wallet(ws, tx_hash):
     tx = rpc(
         ws,
         "eth_getTransactionByHash",
         [tx_hash],
-        200
+        500
     )
 
     if not tx:
@@ -169,236 +91,236 @@ def get_transaction_sender(ws, tx_hash):
     return tx.get("from", "").lower()
 
 
-def get_pool_tokens(ws, pool):
-    if pool in pool_tokens:
-        return pool_tokens[pool]
+def get_pool_factory(ws, pool):
+    try:
+        result = rpc(
+            ws,
+            "eth_call",
+            [{
+                "to": pool,
+                "data": FACTORY_SELECTOR
+            }, "latest"],
+            600
+        )
 
-    token0_call = {
-        "to": pool,
-        "data": "0x0dfe1681"
-    }
+        if not result or len(result) < 42:
+            return None
 
-    token1_call = {
-        "to": pool,
-        "data": "0xd21220a7"
-    }
+        return "0x" + result[-40:].lower()
 
-    token0_hex = rpc(ws, "eth_call", [token0_call, "latest"], 201)
-    token1_hex = rpc(ws, "eth_call", [token1_call, "latest"], 202)
-
-    token0 = "0x" + token0_hex[-40:].lower()
-    token1 = "0x" + token1_hex[-40:].lower()
-
-    pool_tokens[pool] = (token0, token1)
-
-    return token0, token1
+    except Exception as e:
+        print("Factory check error:", e)
+        return None
 
 
-def update_usdc_price(log):
+def is_pancakeswap_pool(ws, pool):
+    pool = pool.lower()
+
+    if pool in known_pancake_pools:
+        return True
+
+    factory = get_pool_factory(ws, pool)
+
+    if factory == PANCAKE_FACTORY:
+        known_pancake_pools.add(pool)
+        return True
+
+    return False
+
+
+def update_quid_usdc_price(ws):
     global quid_usdc_price
+    global last_price_update
 
-    pool = log["address"].lower()
+    now = time.time()
 
-    if pool != KNOWN_USDC_POOL:
-        return
+    # Refresh price at most once every 30 seconds.
+    if now - last_price_update < 30 and quid_usdc_price > 0:
+        return quid_usdc_price
 
-    data = log["data"][2:]
+    try:
+        result = rpc(
+            ws,
+            "eth_call",
+            [{
+                "to": QUID_USDC_POOL,
+                "data": SLOT0_SELECTOR
+            }, "latest"],
+            700
+        )
 
-    if len(data) < 128:
-        return
+        if not result or len(result) < 66:
+            return quid_usdc_price
 
-    amount0 = signed_int256(data[0:64])
-    amount1 = signed_int256(data[64:128])
+        data = result[2:]
 
-    if amount0 == 0 or amount1 == 0:
-        return
+        # slot0 first value = sqrtPriceX96
+        sqrt_price_x96 = int(data[0:64], 16)
 
-    # QUID is token0 and USDC is token1 in the verified pool.
-    quid_amount = abs(amount0) / (10 ** QUID_DECIMALS)
-    usdc_amount = abs(amount1) / (10 ** USDC_DECIMALS)
+        if sqrt_price_x96 <= 0:
+            return quid_usdc_price
 
-    if quid_amount > 0:
-        quid_usdc_price = usdc_amount / quid_amount
+        # QUID is token0 and USDC is token1.
+        raw_price = (
+            sqrt_price_x96 * sqrt_price_x96
+        ) / (2 ** 192)
+
+        # Convert raw token1/token0 to human USDC/QUID.
+        price = raw_price * (
+            10 ** QUID_DECIMALS
+        ) / (
+            10 ** USDC_DECIMALS
+        )
+
+        if price > 0:
+            quid_usdc_price = price
+            last_price_update = now
+
+    except Exception as e:
+        print("Price update error:", e)
+
+    return quid_usdc_price
 
 
-def extract_quid_amount(log, token0, token1):
-    data = log["data"][2:]
+def extract_quid_amount_from_swap(log):
+    data = log.get("data", "")
 
-    if len(data) < 128:
+    if not data or len(data) < 258:
         return 0.0
 
+    data = data[2:]
+
     amount0 = signed_int256(data[0:64])
     amount1 = signed_int256(data[64:128])
 
-    if token0 == QUID:
+    pool = log.get("address", "").lower()
+
+    # Known QUID/USDC pool:
+    # token0 = QUID
+    # token1 = USDC
+    if pool == QUID_USDC_POOL:
         return abs(amount0) / (10 ** QUID_DECIMALS)
 
-    if token1 == QUID:
-        return abs(amount1) / (10 ** QUID_DECIMALS)
+    return None
+
+
+def get_quid_amount_for_unknown_pool(ws, pool, swap_log):
+    """
+    Read token0()/token1() from the pool and determine
+    which Swap amount belongs to QUID.
+    """
+
+    try:
+        token0_result = rpc(
+            ws,
+            "eth_call",
+            [{
+                "to": pool,
+                "data": "0x0dfe1681"
+            }, "latest"],
+            800
+        )
+
+        token1_result = rpc(
+            ws,
+            "eth_call",
+            [{
+                "to": pool,
+                "data": "0xd21220a7"
+            }, "latest"],
+            801
+        )
+
+        token0 = "0x" + token0_result[-40:].lower()
+        token1 = "0x" + token1_result[-40:].lower()
+
+        data = swap_log["data"][2:]
+
+        amount0 = signed_int256(data[0:64])
+        amount1 = signed_int256(data[64:128])
+
+        if token0 == QUID:
+            return abs(amount0) / (10 ** QUID_DECIMALS)
+
+        if token1 == QUID:
+            return abs(amount1) / (10 ** QUID_DECIMALS)
+
+    except Exception as e:
+        print("Pool token error:", e)
 
     return 0.0
 
 
-def process_swap(ws, log):
-    global quid_usdc_price
+def find_quid_swaps(ws, receipt):
+    """
+    Look through the transaction receipt.
 
-    tx_hash = log.get("transactionHash", "").lower()
+    A transaction only counts if:
+    1. It contains QUID.
+    2. It contains a PancakeSwap V3 Swap event.
+    3. The Swap event comes from a PancakeSwap V3 pool.
+    """
+
+    swap_logs = []
+
+    for log in receipt.get("logs", []):
+        topics = log.get("topics", [])
+
+        if not topics:
+            continue
+
+        if topics[0].lower() != SWAP_TOPIC:
+            continue
+
+        pool = log.get("address", "").lower()
+
+        if not is_pancakeswap_pool(ws, pool):
+            continue
+
+        swap_logs.append(log)
+
+    return swap_logs
+
+
+def process_quid_transfer(ws, transfer_log):
+    tx_hash = transfer_log.get("transactionHash", "").lower()
 
     if not tx_hash:
         return
 
-    # One transaction can produce multiple pool Swap events
-    # during a multi-hop route. We only want the user's QUID trade
-    # represented once for each QUID-containing pool.
     if tx_hash in seen_transactions:
         return
 
-    pool = log.get("address", "").lower()
-
-    if pool not in qid_pools:
-        return
-
-    token0, token1 = get_pool_tokens(ws, pool)
-
-    if QUID not in (token0, token1):
-        return
-
-    update_usdc_price(log)
-
-    quid_amount = extract_quid_amount(log, token0, token1)
-
-    if quid_amount <= 0:
-        return
-
-    # For non-USDC QUID pairs, value the QUID amount using
-    # the latest QUID/USDC pool price.
-    if pool == KNOWN_USDC_POOL:
-        volume_usd = quid_amount * quid_usdc_price
-    else:
-        if quid_usdc_price <= 0:
-            print("Waiting for QUID/USDC price...")
-            return
-
-        volume_usd = quid_amount * quid_usdc_price
-
-    if volume_usd <= 0:
-        return
-
-    wallet = get_transaction_sender(ws, tx_hash)
-
-    if not wallet:
-        return
-
-    seen_transactions.add(tx_hash)
-
-    wallet_volume[wallet] = wallet_volume.get(wallet, 0.0) + volume_usd
-
-    print()
-    print("🔥 QUID PANCAKESWAP TRADE")
-    print("--------------------------------------")
-    print("Wallet:", wallet)
-    print("Pool:", pool)
-    print("TX:", tx_hash)
-    print("QUID amount:", f"{quid_amount:,.6f}")
-    print("Trade USD:", f"${volume_usd:,.6f}")
-    print()
-    print("===== WALLET VOLUME =====")
-
-    ranked = sorted(
-        wallet_volume.items(),
-        key=lambda x: x[1],
-        reverse=True
+    # Get complete transaction receipt.
+    receipt = rpc(
+        ws,
+        "eth_getTransactionReceipt",
+        [tx_hash],
+        900
     )
 
-    for address, volume in ranked:
-        print(
-            f"{address} | ${volume:,.2f}"
-        )
+    if not receipt:
+        return
 
-    print("--------------------------------------")
+    if receipt.get("status") != "0x1":
+        return
 
+    swap_logs = find_quid_swaps(ws, receipt)
 
-def subscribe_to_pools(ws):
-    print("Subscribing to QUID pool Swap events...")
+    if not swap_logs:
+        # It was a QUID transfer, but NOT a PancakeSwap swap.
+        return
 
-    subscription_ids = []
+    # One transaction = one trade for our tracker.
+    swap_log = swap_logs[0]
 
-    for pool in sorted(qid_pools):
-        message = {
-            "jsonrpc": "2.0",
-            "id": 300 + len(subscription_ids),
-            "method": "eth_subscribe",
-            "params": [
-                "logs",
-                {
-                    "address": pool,
-                    "topics": [SWAP_TOPIC]
-                }
-            ]
-        }
+    pool = swap_log.get("address", "").lower()
 
-        ws.send(json.dumps(message))
-        subscription_ids.append(pool)
-
-    # Read all subscription acknowledgements.
-    acknowledged = 0
-
-    while acknowledged < len(subscription_ids):
-        response = json.loads(ws.recv())
-
-        if "result" in response:
-            acknowledged += 1
-
-    print("Subscribed to:", len(subscription_ids), "QUID pools")
-    print("🔥 LIVE QUID TRACKER READY")
-
-
-def listen():
-    while True:
-        try:
-            print("Connecting to Base via Alchemy...")
-
-            ws = websocket.create_connection(
-                WS_URL,
-                timeout=60
-            )
-
-            discover_pools(ws)
-
-            subscribe_to_pools(ws)
-
-            while True:
-                message = ws.recv()
-
-                if not message:
-                    continue
-
-                data = json.loads(message)
-
-                if data.get("method") != "eth_subscription":
-                    continue
-
-                result = data.get("params", {}).get("result")
-
-                if result:
-                    try:
-                        process_swap(ws, result)
-                    except Exception as e:
-                        print("SWAP ERROR:", e)
-
-        except Exception as e:
-            print("WEBSOCKET ERROR:", e)
-            print("Reconnecting in 5 seconds...")
-            time.sleep(5)
-
-
-if __name__ == "__main__":
-    print("======================================")
-    print("     BASE QUID WALLET VOLUME TRACKER")
-    print("======================================")
-    print("Dune: DISABLED")
-    print("Rule: PancakeSwap Swap + QUID")
-    print("Output: Wallet + Total Volume USD")
-    print()
-
-    listen()
+    if pool == QUID_USDC_POOL:
+        quid_amount = extract_quid_amount_from_swap(swap_log)
+    else:
+        quid_amount = get_quid_amount_for_unknown_pool(
+            ws,
+            pool,
+            swap_log
+       
