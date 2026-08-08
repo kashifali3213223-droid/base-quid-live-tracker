@@ -323,4 +323,146 @@ def process_quid_transfer(ws, transfer_log):
             ws,
             pool,
             swap_log
-       
+        )
+
+    if not quid_amount or quid_amount <= 0:
+        return
+
+    price = update_quid_usdc_price(ws)
+
+    if price <= 0:
+        print("Waiting for QUID/USD price...")
+        return
+
+    volume_usd = quid_amount * price
+
+    if volume_usd <= 0:
+        return
+
+    wallet = get_wallet(ws, tx_hash)
+
+    if not wallet:
+        return
+
+    seen_transactions.add(tx_hash)
+
+    wallet_volume[wallet] = (
+        wallet_volume.get(wallet, 0.0)
+        + volume_usd
+    )
+
+    print()
+    print("🔥 QUID PANCAKESWAP SWAP")
+    print("--------------------------------------")
+    print("Wallet:", wallet)
+    print("Pool:", pool)
+    print("TX:", tx_hash)
+    print("QUID amount:", f"{quid_amount:,.6f}")
+    print("QUID price:", f"${price:,.8f}")
+    print("Trade volume:", f"${volume_usd:,.6f}")
+    print()
+    print("===== WALLET VOLUME =====")
+
+    ranked = sorted(
+        wallet_volume.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    for address, volume in ranked:
+        print(
+            f"{address} | ${volume:,.2f}"
+        )
+
+    print("--------------------------------------")
+
+
+def subscribe(ws):
+    print("Subscribing to QUID transfers...")
+
+    message = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_subscribe",
+        "params": [
+            "logs",
+            {
+                "address": QUID,
+                "topics": [TRANSFER_TOPIC]
+            }
+        ]
+    }
+
+    ws.send(json.dumps(message))
+
+    while True:
+        response = json.loads(ws.recv())
+
+        if response.get("id") == 1:
+            if "error" in response:
+                raise RuntimeError(str(response["error"]))
+
+            print("Subscription:", response)
+            break
+
+    print("🔥 LIVE QUID PANCAKESWAP TRACKER READY")
+    print()
+
+
+def listen():
+    while True:
+        try:
+            print("Connecting to Base via Alchemy...")
+
+            ws = websocket.create_connection(
+                WS_URL,
+                timeout=60
+            )
+
+            # Start with verified QUID/USDC pool.
+            known_pancake_pools.add(QUID_USDC_POOL)
+
+            update_quid_usdc_price(ws)
+
+            subscribe(ws)
+
+            while True:
+                message = ws.recv()
+
+                if not message:
+                    continue
+
+                data = json.loads(message)
+
+                if data.get("method") != "eth_subscription":
+                    continue
+
+                result = (
+                    data.get("params", {})
+                    .get("result")
+                )
+
+                if not result:
+                    continue
+
+                try:
+                    process_quid_transfer(ws, result)
+
+                except Exception as e:
+                    print("PROCESS ERROR:", e)
+
+        except Exception as e:
+            print("WEBSOCKET ERROR:", e)
+            print("Reconnecting in 5 seconds...")
+            time.sleep(5)
+
+
+if __name__ == "__main__":
+    print("======================================")
+    print("     BASE QUID WALLET VOLUME TRACKER")
+    print("======================================")
+    print("Rule: PancakeSwap Swap + QUID")
+    print("Output: Wallet + Total Volume USD")
+    print()
+
+    listen()
