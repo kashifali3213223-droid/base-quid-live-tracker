@@ -320,7 +320,8 @@ def process_swap(ws, log):
     print("----------------------------------------")
 
     print("===== WALLET TOTALS =====")
-
+print("TOTAL WALLETS:", len(wallet_volume))
+print("TOTAL VOLUME USD:", f"${sum(wallet_volume.values()):.2f}")
     ranked = sorted(
         wallet_volume.items(),
         key=lambda item: item[1],
