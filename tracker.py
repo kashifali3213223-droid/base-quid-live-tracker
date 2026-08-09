@@ -319,7 +319,7 @@ def process_swap(ws, log):
     print("Wallet total USD:", f"${wallet_volume[wallet]:,.6f}")
     print("----------------------------------------")
 
-        print("===== WALLET TOTALS =====")
+    print("===== WALLET TOTALS =====")
     print("TOTAL WALLETS:", len(wallet_volume))
     print("TOTAL VOLUME USD:", f"${sum(wallet_volume.values()):.2f}")
 
@@ -336,7 +336,7 @@ def process_swap(ws, log):
             f"${volume:,.2f}"
         )
 
-    print("----------------------------------------")
+    print("------------------------------------------")        
 
 def subscribe(ws):
     print("Subscribing to PancakeSwap V3 Swap events...")
