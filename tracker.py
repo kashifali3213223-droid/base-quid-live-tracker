@@ -439,7 +439,15 @@ def listen():
                     ws.close()
             except Exception:
                 pass
+def start_tracker():
+    if tracker_status.get("running"):
+        return
 
+    tracker_status["running"] = True
+    tracker_status["last_error"] = None
+
+    thread = threading.Thread(target=listen, daemon=True)
+    thread.start()
 
 if __name__ == "__main__":
     print("========================================")
