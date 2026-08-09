@@ -2,7 +2,8 @@ import os
 import json
 import time
 import websocket
-
+import threading
+data_lock = threading.Lock()
 ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY")
 if not ALCHEMY_API_KEY:
     raise RuntimeError("ALCHEMY_API_KEY is missing")
