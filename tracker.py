@@ -237,7 +237,6 @@ def get_quid_amount(ws, pool, log):
 
     return 0.0
 
-
 def process_swap(ws, log):
     tx_hash = log.get(
         "transactionHash",
@@ -252,10 +251,25 @@ def process_swap(ws, log):
     if not tx_hash or not pool:
         return
 
-    # Count a transaction only once even if a route emits multiple
-    # QUID-containing PancakeSwap pool Swap events.
+    # Count a transaction only once.
     if tx_hash in seen_transactions:
         return
+
+    # Get the actual top-level transaction.
+    try:
+        tx = rpc(
+            ws,
+            "eth_getTransactionByHash",
+            [tx_hash]
+        )
+    except Exception as e:
+        print("Transaction lookup error:", e)
+        return
+
+    if not tx:
+        return
+
+    
 
     # Ignore non-PancakeSwap V3 pools.
     if not is_pancakeswap_v3_pool(ws, pool):
@@ -291,9 +305,9 @@ def process_swap(ws, log):
     if not wallet:
         return
 
-    # Mark after all validation so failed/non-QUID events don't block
-    # a valid event from the same transaction.
+    # Mark only after all validation succeeds.
     seen_transactions.add(tx_hash)
+
 
     # USD valuation is based on the verified QUID/USDC spot price.
     price = update_quid_usdc_price(ws)
