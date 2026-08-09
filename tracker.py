@@ -4,6 +4,11 @@ import time
 import websocket
 import threading
 data_lock = threading.Lock()
+tracker_status = {
+    "running": False,
+    "last_error": None,
+    "last_swap_time": None,
+}
 ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY")
 if not ALCHEMY_API_KEY:
     raise RuntimeError("ALCHEMY_API_KEY is missing")
